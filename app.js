@@ -142,6 +142,21 @@ function shareData(){
  table+='</tbody></table>';
  return {text,html:`<div><h2>${title(key)} SHOP장 업무 스케줄</h2><p><strong>shop장 업무 담당자 순번</strong><br>${esc(order)}</p><p>순환 시작: ${esc(nameOf(r.pool.includes(m.start)?m.start:r.pool[0]))}${fixed?'<br>고정 배정: '+esc(fixed)+(m.excludeFixed?' (일반 순환 제외)':''):''}</p>${table}</div>`};
 }
+function preparePrint(){
+ let sheet=$('#printSheet');
+ if(!sheet){sheet=document.createElement('section');sheet.id='printSheet';document.body.append(sheet);}
+ sheet.innerHTML=shareData().html;
+ sheet.classList.add('print-measure');
+ try{
+  const page=sheet.firstElementChild,table=sheet.querySelector('table');
+  // Fit unusually long rosters and notes without cutting off their content.
+  for(let step=20;step>=10;step--){
+   sheet.style.setProperty('--print-scale',String(step/20));
+   if(page.scrollHeight<=page.clientHeight+1&&table.getBoundingClientRect().bottom<=page.getBoundingClientRect().bottom+1)break;
+  }
+ }finally{sheet.classList.remove('print-measure');}
+}
+function printSchedule(){preparePrint();window.print();}
 async function copyTable(){
  const {text,html}=shareData();
  try {if(navigator.clipboard?.write&&typeof ClipboardItem!=='undefined'){await navigator.clipboard.write([new ClipboardItem({'text/html':new Blob([html],{type:'text/html'}),'text/plain':new Blob([text],{type:'text/plain'})})]);toast('순번과 달력을 복사했어요. 메일·문서에 붙여넣으세요.');return;}}catch{}
@@ -177,7 +192,8 @@ function bind(){
  $('#shareBtn').onclick=async()=>{const button=$('#shareBtn');button.disabled=true;try{const file=new File([await calendarImage()],`SHOP장_스케줄_${state.current}.png`,{type:'image/png'});if(navigator.canShare?.({files:[file]})){await navigator.share({files:[file],title:`${title(state.current)} SHOP장 업무 스케줄`});}else{download(file,file.name);toast('공유할 이미지를 저장했어요. 메신저에 파일을 첨부해 주세요.');}}catch(e){if(e.name!=='AbortError')toast('공유창을 열지 못했어요. 이미지 저장 또는 표 복사를 이용해 주세요.');}finally{button.disabled=false;}};
  $('#backupBtn').onclick=()=>{download(new Blob([JSON.stringify(state,null,2)],{type:'application/json'}),`SHOP스케줄_백업_${monthKey(new Date())}.json`);toast('전체 월별 자료를 백업했어요.');};
  $('#importBtn').onclick=()=>$('#importFile').click();$('#importFile').onchange=async e=>{const file=e.target.files[0];e.target.value='';if(!file)return;if(file.size>5_000_000)return toast('백업 파일이 너무 큽니다.');try{const incoming=JSON.parse(await file.text());if(!validateState(incoming)||!holidays[incoming.current.slice(0,4)])throw new Error();modal('백업 불러오기',`<p class="modal-intro">담당자 ${incoming.roster.length}명 · ${Object.keys(incoming.months).length}개월 자료입니다. 이 브라우저의 전체 자료를 백업 내용으로 교체합니다.</p><p class="warning-box">현재 자료가 필요하면 먼저 백업 저장을 해 주세요. 불러오기 직후에는 실행 취소로 되돌릴 수 있습니다.</p><div class="modal-actions"><button class="btn" id="cancelImport">취소</button><button class="btn primary" id="confirmImport">자료 교체</button></div>`);$('#cancelImport').onclick=close;$('#confirmImport').onclick=()=>{change(()=>{state=incoming;ensureMonth(state.current,state,holidays);},'백업 자료를 불러왔어요.');close();};}catch{toast('유효한 SHOP 스케줄 백업 파일이 아닙니다.');}};
- $('#helpBtn').onclick=showHelp;$('#printBtn').onclick=()=>window.print();
+ $('#helpBtn').onclick=showHelp;$('#printBtn').onclick=printSchedule;$('#printScheduleBtn').onclick=printSchedule;
+ window.addEventListener('beforeprint',preparePrint);
  window.addEventListener('storage',e=>{if(e.key===STORAGE)toast('다른 탭에서 자료가 변경됐어요. 새로고침하여 최신 자료를 확인하세요.');});
 }
 async function init(){
