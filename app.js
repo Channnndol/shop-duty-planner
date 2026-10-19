@@ -1,8 +1,9 @@
-import {initialRoster,monthKey,shiftMonth,daysInMonth,pad,weekday,holidayName,available,generate,ensureMonth,validateState} from './engine.js';
+import {initialRoster,monthKey,shiftMonth,daysInMonth,pad,weekday,holidayName,available,generate,ensureMonth,validateState,swapAssignments,visibleSwap} from './engine.js?v=2';
 const $=s=>document.querySelector(s), esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const STORAGE='shop-duty-planner-v1', week=['일','월','화','수','목','금','토'];
 const palette=[['#edf3e8','#63815a'],['#eef1e9','#758457'],['#f8f0e4','#a88a50'],['#eef1f8','#7384a8'],['#f4edf5','#9a77a1'],['#eaf3ee','#5c9078'],['#f9eeea','#ad8170'],['#edf2f3','#688c97'],['#f5f1e5','#9a8e5b']];
 let holidays={},state,history=[],activeTab='rules',toastTimer,storageOk=true;
+let swapMode=false,swapSource=null,dragState=null,suppressClickUntil=0;
 const cur=()=>state.months[state.current],result=()=>generate(state.current,cur(),holidays),person=id=>cur().roster.find(p=>p.id===id),color=id=>palette[Math.max(0,cur().roster.findIndex(p=>p.id===id))%palette.length];
 const title=key=>`${Number(key.slice(0,4))}년 ${Number(key.slice(5))}월`;
 const nameOf=id=>person(id)?.name||'미배정';
@@ -15,6 +16,7 @@ function close(){ $('#modal').close(); }
 function formError(message){let el=$('#formError');if(!el){el=document.createElement('p');el.id='formError';el.className='error';$('#modalBody').append(el);}el.textContent=message;}
 function navigate(key){if(!/^\d{4}-(0[1-9]|1[0-2])$/.test(key))return;if(!holidays[key.slice(0,4)]){toast('해당 연도의 공휴일 자료가 없습니다. 현재 지원 연도 내에서 선택해 주세요.');$('#monthInput').value=state.current;return;}ensureMonth(key,state,holidays);state.current=key;persist();render();}
 function render(){
+ cancelDrag();swapMode=false;swapSource=null;
  const m=cur(),r=result(),key=state.current,working=r.days.filter(d=>d.kind!=='off'),assigned=working.filter(d=>d.id),fixed=assigned.filter(d=>d.kind==='fixed'),modified=working.filter(d=>d.kind==='manual'),issues=working.filter(d=>d.warning),prev=state.months[shiftMonth(key,-1)];
  $('#monthTitle').textContent=`${key.slice(0,4)}. ${key.slice(5)}`;$('#monthInput').value=key;$('#calendarTitle').textContent=`${title(key)} 업무 달력`;$('#monthSummary').textContent=`근무일 ${working.length}일 · 고정 ${fixed.length}일 · 직접 수정 ${modified.length}일`;
  $('#undoBtn').disabled=!history.length;
@@ -29,8 +31,10 @@ function render(){
  $('#fixedFields').querySelectorAll('select').forEach(el=>el.onchange=()=>change(()=>{if(el.value)m.fixed[el.dataset.fixed]=el.value;else delete m.fixed[el.dataset.fixed];normalizeStart();},'고정 배정 규칙을 적용했어요.'));
  const first=weekday(key+'-01'),today=new Date(),todayKey=monthKey(today)+'-'+pad(today.getDate());
  let html=week.map(w=>`<div class="weekday">${w}</div>`).join('')+'<div class="day blank" aria-hidden="true"></div>'.repeat(first);
- html+=r.days.map(d=>{const [bg,fg]=color(d.id);return `<button class="day ${d.kind==='off'?'off':''} ${d.weekday===0?'sun':''} ${d.weekday===6?'sat':''} ${d.holiday?'holiday':''} ${d.date===todayKey?'today':''}" data-date="${d.date}" aria-label="${esc(d.date+' '+week[d.weekday]+'요일 '+(d.holiday||'')+' '+(d.id?nameOf(d.id):d.kind==='off'?'휴무':'미배정')+(d.note?' '+d.note:''))}" ${d.date===todayKey?'aria-current="date"':''}><span class="date-num">${d.day}</span>${d.warning?'<span class="conflict-mark" title="'+esc(d.warning)+'">!</span>':''}${d.holiday?`<span class="holiday-label">${esc(d.holiday)}</span>`:''}${d.id?`<span class="assignment ${d.kind}" style="--person-bg:${bg};--person-fg:${fg}"><i class="person-dot"></i><span>${esc(nameOf(d.id))}</span>${d.kind!=='rotation'?`<span class="mini-kind">${d.kind==='fixed'?'고정':'수정'}</span>`:''}</span>`:d.kind!=='off'?'<span class="unassigned">미배정</span>':''}${d.note?`<span class="cell-note">${esc(d.note)}</span>`:''}</button>`;}).join('');
- html+='<div class="day blank" aria-hidden="true"></div>'.repeat((7-(first+r.days.length)%7)%7);$('#calendar').innerHTML=html;$('#calendar').querySelectorAll('[data-date]').forEach(el=>el.onclick=()=>editDay(el.dataset.date));
+ html+=r.days.map(d=>{const [bg,fg]=color(d.id),swap=visibleSwap(m,d),detail=swap?`${Number(swap.otherDate.slice(8))}일과 최근 교환: ${swap.fromName} ↔ ${swap.toName}`:'';return `<button class="day ${d.kind==='off'?'off':''} ${d.weekday===0?'sun':''} ${d.weekday===6?'sat':''} ${d.holiday?'holiday':''} ${d.date===todayKey?'today':''} ${swap?'swapped':''}" data-date="${d.date}" data-assigned="${Boolean(d.id)}" aria-label="${esc(d.date+' '+week[d.weekday]+'요일 '+(d.holiday||'')+' '+(d.id?nameOf(d.id):d.kind==='off'?'휴무':'미배정')+(d.note?' '+d.note:'')+(detail?' · '+detail:''))}" ${d.date===todayKey?'aria-current="date"':''}><span class="date-num">${d.day}</span>${d.warning?'<span class="conflict-mark" title="'+esc(d.warning)+'">!</span>':''}${d.holiday?`<span class="holiday-label">${esc(d.holiday)}</span>`:''}${d.id?`<span class="assignment ${d.kind}" data-swap-handle="${d.date}" title="담당자를 다른 날짜로 끌어 맞교환" style="--person-bg:${bg};--person-fg:${fg}"><i class="person-dot"></i><span>${esc(nameOf(d.id))}</span>${d.kind!=='rotation'?`<span class="mini-kind">${swap?'교환':d.kind==='fixed'?'고정':'수정'}</span>`:''}</span>`:d.kind!=='off'?'<span class="unassigned">미배정</span>':''}${swap?`<span class="swap-badge" title="${esc(detail)}"><span>↔ ${Number(swap.otherDate.slice(8))}일과 교환</span><span>${esc(swap.fromName)} ↔ ${esc(swap.toName)}</span></span>`:''}${d.note?`<span class="cell-note">${esc(d.note)}</span>`:''}</button>`;}).join('');
+ html+='<div class="day blank" aria-hidden="true"></div>'.repeat((7-(first+r.days.length)%7)%7);$('#calendar').innerHTML=html;
+ $('#calendar').querySelectorAll('[data-date]').forEach(el=>el.onclick=()=>{if(performance.now()<suppressClickUntil)return;if(swapMode)selectSwapDate(el.dataset.date);else editDay(el.dataset.date);});
+ $('#calendar').querySelectorAll('[data-swap-handle]').forEach(el=>{el.onpointerdown=startDrag;el.ondragstart=e=>e.preventDefault();});updateSwapMode();
  $('#issueCount').textContent=issues.length?`확인 필요 ${issues.length}일`:'';$('#totalDays').textContent=`${assigned.length}일 배정`;
  const counts=m.roster.map(p=>({...p,n:assigned.filter(d=>d.id===p.id).length})),max=Math.max(1,...counts.map(p=>p.n));
  $('#distribution').innerHTML=counts.map(p=>`<div class="distribution-row"><span>${esc(p.name)}</span><div class="bar-track"><div class="bar-fill" style="width:${p.n/max*100}%;background:${color(p.id)[1]}66"></div></div><strong>${p.n}일</strong></div>`).join('');
@@ -42,12 +46,72 @@ function render(){
  $('#holidayList').innerHTML=hdays.length?hdays.map(d=>`<div class="list-entry"><div>${esc(d.holiday||'근무일로 변경')}<small>${d.date.slice(5).replace('-','/')} (${week[d.weekday]})${Object.hasOwn(m.holidays,d.date)?' · 직접 설정':''}</small></div><button class="text-btn" data-edit-holiday="${d.date}">편집</button></div>`).join(''):'<div class="empty-state">이번 달 공휴일이 없습니다.</div>';
  $('#holidayList').querySelectorAll('[data-edit-holiday]').forEach(el=>el.onclick=()=>editHoliday(el.dataset.editHoliday));
 }
+function updateSwapMode(){
+ $('#swapModeBtn').setAttribute('aria-pressed',String(swapMode));$('#swapModeBtn').textContent=swapMode?'교환 취소':'⇄ 일정 맞교환';
+ $('#calendar').classList.toggle('swap-mode',swapMode);$('#swapInstructions').hidden=!swapMode;
+ $('#swapInstructions').textContent=swapSource?`${Number(swapSource.slice(8))}일 ${nameOf(result().days.find(d=>d.date===swapSource)?.id)} 선택 · 맞바꿀 날짜를 선택하세요. (Esc로 취소)`:'맞교환할 두 날짜를 차례로 선택하세요. (Esc로 취소)';
+ $('#calendar').querySelectorAll('[data-date]').forEach(el=>{el.classList.toggle('swap-selected',el.dataset.date===swapSource);if(swapMode)el.setAttribute('aria-pressed',String(el.dataset.date===swapSource));else el.removeAttribute('aria-pressed');});
+}
+function selectSwapDate(date){
+ if(!result().days.find(d=>d.date===date)?.id)return toast('담당자가 배정된 날짜를 선택해 주세요.');
+ if(date===swapSource){swapSource=null;updateSwapMode();return;}
+ if(!swapSource){swapSource=date;updateSwapMode();return;}
+ performSwap(swapSource,date);
+}
+function performSwap(from,to){
+ const next=structuredClone(cur()),outcome=swapAssignments(state.current,next,holidays,from,to);
+ if(!outcome.ok){toast(outcome.error);return;}
+ change(()=>{state.months[state.current]=next;},`${outcome.fromDay}일 ${outcome.fromName} ↔ ${outcome.toDay}일 ${outcome.toName} 교환 완료`);
+ $(`[data-date="${to}"]`)?.focus({preventScroll:true});
+}
+function cancelDrag(){
+ if(!dragState)return;
+ const drag=dragState;dragState=null;cancelAnimationFrame(drag.frame);drag.ghost?.remove();
+ if(drag.active)suppressClickUntil=performance.now()+450;
+ if(drag.handle.hasPointerCapture(drag.pointerId))drag.handle.releasePointerCapture(drag.pointerId);
+ document.body.classList.remove('is-swapping');
+ $('#calendar').querySelectorAll('.drag-source,.drop-target,.drop-invalid').forEach(el=>el.classList.remove('drag-source','drop-target','drop-invalid'));
+}
+function locateDrop(){
+ const drag=dragState;if(!drag?.active)return;
+ const target=document.elementFromPoint(drag.x,drag.y)?.closest('#calendar [data-date]');
+ drag.target=target?.dataset.date||null;
+ $('#calendar').querySelectorAll('.drop-target,.drop-invalid').forEach(el=>el.classList.remove('drop-target','drop-invalid'));
+ if(target&&drag.target!==drag.from)target.classList.add(target.dataset.assigned==='true'?'drop-target':'drop-invalid');
+ drag.ghost.style.left=Math.min(window.innerWidth-180,Math.max(8,drag.x+12))+'px';drag.ghost.style.top=Math.max(8,drag.y-46)+'px';
+}
+function dragScroll(){
+ const drag=dragState;if(!drag?.active)return;
+ const margin=65,delta=drag.y<margin?-9:drag.y>innerHeight-margin?9:0;
+ if(delta){window.scrollBy(0,delta);locateDrop();}
+ drag.frame=requestAnimationFrame(dragScroll);
+}
+function startDrag(e){
+ if(e.button!==0||!e.isPrimary||swapMode)return;
+ cancelDrag();const handle=e.currentTarget;
+ dragState={handle,pointerId:e.pointerId,from:handle.dataset.swapHandle,startX:e.clientX,startY:e.clientY,x:e.clientX,y:e.clientY,active:false,target:null,frame:0};
+ handle.setPointerCapture(e.pointerId);
+}
+function moveDrag(e){
+ const drag=dragState;if(!drag||drag.pointerId!==e.pointerId)return;
+ drag.x=e.clientX;drag.y=e.clientY;
+ if(!drag.active&&Math.hypot(drag.x-drag.startX,drag.y-drag.startY)<8)return;
+ e.preventDefault();
+ if(!drag.active){drag.active=true;drag.handle.closest('.day').classList.add('drag-source');document.body.classList.add('is-swapping');drag.ghost=document.createElement('div');drag.ghost.className='swap-ghost';drag.ghost.textContent=`⇄ ${Number(drag.from.slice(8))}일 ${nameOf(result().days.find(d=>d.date===drag.from).id)}`;document.body.append(drag.ghost);drag.frame=requestAnimationFrame(dragScroll);}
+ locateDrop();
+}
+function endDrag(e){
+ const drag=dragState;if(!drag||drag.pointerId!==e.pointerId)return;
+ if(drag.active){drag.x=e.clientX;drag.y=e.clientY;locateDrop();e.preventDefault();}
+ const {from,target,active}=drag;cancelDrag();
+ if(active&&target&&from!==target)performSwap(from,target);
+}
 function normalizeStart(){const r=result();if(!r.pool.includes(cur().start))cur().start=r.pool[0]||'';}
 function editDay(date){
  const d=result().days.find(d=>d.date===date),m=cur(),off=d.kind==='off';
  modal(`${Number(date.slice(5,7))}월 ${d.day}일 ${week[d.weekday]}요일`, `<p class="modal-intro">${off?esc(d.holiday||'주말')+' · 담당자를 배정하지 않는 날입니다.':'이 날짜만 수정합니다. 다른 날짜와 다음 달 순환 순번은 유지됩니다.'}</p>${d.warning?`<p class="warning-box">${esc(d.warning)}</p>`:''}<form id="dayForm">${!off?`<div class="form-row"><label class="field-label" for="dayPerson">담당자</label><select id="dayPerson"><option value="">미배정</option>${m.roster.map(p=>`<option value="${esc(p.id)}" ${p.id===d.id?'selected':''} ${!available(m,p.id,date)?'disabled':''}>${esc(p.name)}${!available(m,p.id,date)?' (연차)':''}</option>`).join('')}</select></div>`:''}<div class="form-row"><label class="field-label" for="dayNote">메모 <span class="optional">달력·복사본에 표시</span></label><textarea id="dayNote" maxlength="100" rows="3" placeholder="인수인계나 변경 사유를 남겨 주세요">${esc(d.note)}</textarea></div><div class="modal-actions">${Object.hasOwn(m.overrides,date)?'<button type="button" class="text-btn" id="resetDay">자동 배정으로 복원</button>':''}<span class="spacer"></span><button type="button" class="btn" id="cancelDay">취소</button><button class="btn primary" type="submit">저장</button></div></form>`);
- $('#cancelDay').onclick=close;if($('#resetDay'))$('#resetDay').onclick=()=>{change(()=>{delete m.overrides[date];},'자동 배정으로 복원했어요.');close();};
- $('#dayForm').onsubmit=e=>{e.preventDefault();const id=$('#dayPerson')?.value||null,note=$('#dayNote').value.trim();if(id&&!available(m,id,date))return formError('연차가 등록된 담당자는 배정할 수 없습니다.');change(()=>{if(!off)m.overrides[date]=id;if(note)m.notes[date]=note;else delete m.notes[date];},'날짜별 변경사항을 저장했어요.');close();};
+ $('#cancelDay').onclick=close;if($('#resetDay'))$('#resetDay').onclick=()=>{change(()=>{delete m.overrides[date];if(m.swaps)delete m.swaps[date];},'자동 배정으로 복원했어요.');close();};
+ $('#dayForm').onsubmit=e=>{e.preventDefault();const id=$('#dayPerson')?.value||null,note=$('#dayNote').value.trim();if(id&&!available(m,id,date))return formError('연차가 등록된 담당자는 배정할 수 없습니다.');change(()=>{if(!off){m.overrides[date]=id;if(id!==d.id&&m.swaps)delete m.swaps[date];}if(note)m.notes[date]=note;else delete m.notes[date];},'날짜별 변경사항을 저장했어요.');close();};
 }
 function editLeave(){
  const key=state.current;
@@ -67,14 +131,14 @@ function editTeam(){
  modal('담당자와 순번 편집',`<p class="modal-intro">위에서 아래 순서대로 순환합니다. 변경은 <strong>이번 달과 앞으로 새로 만드는 달</strong>에 적용되며, 이미 작성한 다른 달은 유지됩니다.</p><div id="teamRows"></div><button class="text-btn" id="addPerson">+ 담당자 추가</button><p class="hint">동명이인은 팀·직책을 덧붙여 구분해 주세요. 최대 50명까지 등록할 수 있어요.</p><div class="modal-actions"><button class="btn" id="cancelTeam">취소</button><button class="btn primary" id="saveTeam">순번 저장</button></div>`);
  const draw=()=>{ $('#teamRows').innerHTML=draft.map((p,i)=>`<div class="team-row"><span>${pad(i+1)}</span><input data-name="${i}" value="${esc(p.name)}" aria-label="${i+1}번째 담당자 이름" maxlength="30"><button data-up="${i}" aria-label="${esc(p.name)} 위로" ${i===0?'disabled':''}>↑</button><button data-down="${i}" aria-label="${esc(p.name)} 아래로" ${i===draft.length-1?'disabled':''}>↓</button><button data-delete="${i}" aria-label="${esc(p.name)} 삭제" ${draft.length===1?'disabled':''}>×</button></div>`).join('');$('#teamRows').querySelectorAll('input').forEach(el=>el.oninput=()=>draft[Number(el.dataset.name)].name=el.value);$('#teamRows').querySelectorAll('[data-up],[data-down],[data-delete]').forEach(el=>el.onclick=()=>{if(el.dataset.delete!==undefined)draft.splice(Number(el.dataset.delete),1);else {const i=Number(el.dataset.up??el.dataset.down),j=i+(el.dataset.up!==undefined?-1:1);[draft[i],draft[j]]=[draft[j],draft[i]];}draw();});};draw();
  $('#addPerson').onclick=()=>{if(draft.length>=50)return toast('담당자는 최대 50명까지 등록할 수 있어요.');draft.push({id:crypto.randomUUID(),name:''});draw();$('#teamRows').lastElementChild.querySelector('input').focus();};$('#cancelTeam').onclick=close;
- $('#saveTeam').onclick=()=>{draft.forEach(p=>p.name=p.name.trim());if(draft.some(p=>!p.name))return formError('담당자 이름을 모두 입력해 주세요.');if(new Set(draft.map(p=>p.name)).size!==draft.length)return formError('같은 이름은 구분할 수 있도록 다르게 입력해 주세요.');change(()=>{const m=cur(),ids=new Set(draft.map(p=>p.id));m.roster=structuredClone(draft);state.roster=structuredClone(draft);m.fixed=Object.fromEntries(Object.entries(m.fixed).filter(([,id])=>ids.has(id)));m.leave=m.leave.filter(l=>ids.has(l.id));for(const [d,id]of Object.entries(m.overrides))if(id&&!ids.has(id))m.overrides[d]=null;normalizeStart();},'담당자와 순번을 저장했어요. 삭제된 담당자의 수동 배정은 미배정으로 표시됩니다.');close();};
+ $('#saveTeam').onclick=()=>{draft.forEach(p=>p.name=p.name.trim());if(draft.some(p=>!p.name))return formError('담당자 이름을 모두 입력해 주세요.');if(new Set(draft.map(p=>p.name)).size!==draft.length)return formError('같은 이름은 구분할 수 있도록 다르게 입력해 주세요.');change(()=>{const m=cur(),ids=new Set(draft.map(p=>p.id));m.roster=structuredClone(draft);state.roster=structuredClone(draft);m.fixed=Object.fromEntries(Object.entries(m.fixed).filter(([,id])=>ids.has(id)));m.leave=m.leave.filter(l=>ids.has(l.id));for(const [d,id]of Object.entries(m.overrides))if(id&&!ids.has(id)){m.overrides[d]=null;if(m.swaps)delete m.swaps[d];}normalizeStart();},'담당자와 순번을 저장했어요. 삭제된 담당자의 수동 배정은 미배정으로 표시됩니다.');close();};
 }
 function shareData(){
  const m=cur(),r=result(),key=state.current,order=m.roster.map(p=>p.name).join(' → '),fixed=Object.entries(m.fixed).map(([d,id])=>`${week[d]}: ${nameOf(id)}`).join(', '),intro=`${title(key)} SHOP장 업무 스케줄\nshop장 업무 담당자 순번\n${order}\n순환 시작: ${nameOf(r.pool.includes(m.start)?m.start:r.pool[0])}${fixed?'\n고정 배정: '+fixed:''}${m.excludeFixed&&fixed?' (일반 순환 제외)':''}`;
- const text=intro+'\n\n'+r.days.map(d=>`${d.day}일 (${week[d.weekday]}) ${d.holiday|| (d.kind==='off'?'휴무':nameOf(d.id))}${d.kind==='fixed'?' [고정]':d.kind==='manual'?' [수정]':''}${d.note?' · '+d.note:''}${d.warning?' · 확인: '+d.warning:''}`).join('\n');
+ const text=intro+'\n\n'+r.days.map(d=>`${d.day}일 (${week[d.weekday]}) ${d.holiday|| (d.kind==='off'?'휴무':nameOf(d.id))}${d.kind==='fixed'?' [고정]':d.kind==='manual'&&!visibleSwap(m,d)?' [수정]':''}${d.note?' · '+d.note:''}${d.warning?' · 확인: '+d.warning:''}`).join('\n');
  const start=weekday(key+'-01'),cells=Array(start).fill(null).concat(r.days);while(cells.length%7)cells.push(null);
- let table='<table style="border-collapse:collapse;table-layout:fixed;width:100%;font-family:Arial,sans-serif"><thead><tr>'+week.map(w=>`<th style="border:1px solid #dce3dc;padding:10px;background:#f3f6ef">${w}</th>`).join('')+'</tr></thead><tbody>';
- for(let i=0;i<cells.length;i+=7)table+='<tr>'+cells.slice(i,i+7).map(d=>`<td style="border:1px solid #dce3dc;padding:10px;vertical-align:top;width:14.28%;height:72px;${d?.kind==='off'?'background:#fafaf7;':''}">${d?`<strong>${d.day}</strong><br>${esc(d.holiday|| (d.kind==='off'?'':nameOf(d.id)))}${d.kind==='fixed'?' (고정)':d.kind==='manual'?' (수정)':''}${d.note?'<br><small>'+esc(d.note)+'</small>':''}${d.warning?'<br><small>'+esc(d.warning)+'</small>':''}`:''}</td>`).join('')+'</tr>';
+ let table='<table style="border-collapse:collapse;table-layout:fixed;width:100%;font-family:Arial,sans-serif"><thead><tr>'+week.map((w,i)=>`<th style="border:1px solid #dce3dc;padding:10px;background:${i===0||i===6?'#fff2f3;color:#e21c2a':'#f3f6ef'}">${w}</th>`).join('')+'</tr></thead><tbody>';
+ for(let i=0;i<cells.length;i+=7)table+='<tr>'+cells.slice(i,i+7).map(d=>`<td style="border:1px solid #dce3dc;padding:10px;vertical-align:top;width:14.28%;height:72px;${d?.kind==='off'?'background:#fff2f3;color:#e21c2a;':''}">${d?`<strong>${d.day}</strong><br>${esc(d.holiday|| (d.kind==='off'?'':nameOf(d.id)))}${d.kind==='fixed'?' (고정)':d.kind==='manual'&&!visibleSwap(m,d)?' (수정)':''}${d.note?'<br><small>'+esc(d.note)+'</small>':''}${d.warning?'<br><small>'+esc(d.warning)+'</small>':''}`:''}</td>`).join('')+'</tr>';
  table+='</tbody></table>';
  return {text,html:`<div><h2>${title(key)} SHOP장 업무 스케줄</h2><p><strong>shop장 업무 담당자 순번</strong><br>${esc(order)}</p><p>순환 시작: ${esc(nameOf(r.pool.includes(m.start)?m.start:r.pool[0]))}${fixed?'<br>고정 배정: '+esc(fixed)+(m.excludeFixed?' (일반 순환 제외)':''):''}</p>${table}</div>`};
 }
@@ -91,19 +155,22 @@ async function calendarImage(){
  const wrap=(text,x,y,width,font,maxLines=2)=>{ctx.font=font;let line='',lineNo=0;for(const char of text){if(ctx.measureText(line+char).width>width&&line){ctx.fillText(line,x,y+lineNo*23);lineNo++;line='';if(lineNo>=maxLines)return;}line+=char;}if(line&&lineNo<maxLines)ctx.fillText(line,x,y+lineNo*23);};
  m.roster.forEach((member,i)=>{ctx.fillStyle='#54755d';ctx.font='400 18px "Noto Sans KR",sans-serif';const cell=(W-p*2)/9;wrap(`${i+1}. ${member.name}`,p+(i%9)*cell,187+Math.floor(i/9)*44,cell-12,'400 18px "Noto Sans KR",sans-serif',1);});
  ctx.fillStyle='#819384';ctx.font='400 15px "Noto Sans KR",sans-serif';const fixed=Object.entries(m.fixed).map(([d,id])=>`${week[d]} ${nameOf(id)}`).join(' / ');wrap(`순환 시작: ${nameOf(r.pool.includes(m.start)?m.start:r.pool[0])}${fixed?'   ·   고정: '+fixed+(m.excludeFixed?' (순환 제외)':''):''}`,p,top-15,W-p*2,'400 15px "Noto Sans KR",sans-serif',1);
- for(let c=0;c<7;c++){ctx.fillStyle='#f3f6ef';ctx.fillRect(p+c*cw,top,cw,42);ctx.fillStyle=c===0?'#b76d67':c===6?'#7993b7':'#6b806f';ctx.font='500 17px "Noto Sans KR",sans-serif';ctx.fillText(week[c],p+c*cw+cw/2-8,top+28);}
- r.days.forEach(d=>{const at=first+d.day-1,x=p+(at%7)*cw,y=top+42+Math.floor(at/7)*ch;ctx.fillStyle=d.kind==='off'?'#fafbf8':'#fff';ctx.fillRect(x,y,cw,ch);ctx.fillStyle=d.holiday||d.weekday===0?'#bd746e':d.weekday===6?'#7890b2':'#405747';ctx.font='500 19px "Noto Sans KR",sans-serif';ctx.fillText(String(d.day),x+14,y+30);if(d.holiday){ctx.fillStyle='#b87871';wrap(d.holiday,x+14,y+63,cw-27,'400 16px "Noto Sans KR",sans-serif',2);}else if(d.kind!=='off'){const [bg,fg]=color(d.id);ctx.fillStyle=bg;ctx.fillRect(x+10,y+45,cw-20,42);ctx.fillStyle=fg;wrap(nameOf(d.id),x+20,y+73,cw-38,'500 21px "Noto Sans KR",sans-serif',1);ctx.fillStyle='#8e9c90';ctx.font='400 12px "Noto Sans KR",sans-serif';ctx.fillText(d.kind==='fixed'?'고정':d.kind==='manual'?'직접 수정':'순환',x+14,y+106);}if(d.note){ctx.fillStyle='#7b8f80';wrap(d.note,x+14,y+129,cw-28,'400 13px "Noto Sans KR",sans-serif',2);}if(d.warning){ctx.fillStyle='#b77747';ctx.font='500 12px "Noto Sans KR",sans-serif';ctx.fillText('! 확인 필요',x+cw-86,y+29);}});
+ for(let c=0;c<7;c++){ctx.fillStyle=c===0||c===6?'#fff2f3':'#f3f6ef';ctx.fillRect(p+c*cw,top,cw,42);ctx.fillStyle=c===0||c===6?'#e21c2a':'#6b806f';ctx.font='500 17px "Noto Sans KR",sans-serif';ctx.fillText(week[c],p+c*cw+cw/2-8,top+28);}
+ r.days.forEach(d=>{const at=first+d.day-1,x=p+(at%7)*cw,y=top+42+Math.floor(at/7)*ch;ctx.fillStyle=d.kind==='off'?'#fff2f3':'#fff';ctx.fillRect(x,y,cw,ch);ctx.fillStyle=d.holiday||d.weekday===0||d.weekday===6?'#e21c2a':'#405747';ctx.font='500 19px "Noto Sans KR",sans-serif';ctx.fillText(String(d.day),x+14,y+30);if(d.holiday){ctx.fillStyle='#e21c2a';wrap(d.holiday,x+14,y+63,cw-27,'400 16px "Noto Sans KR",sans-serif',2);}else if(d.kind!=='off'){const [bg,fg]=color(d.id);ctx.fillStyle=bg;ctx.fillRect(x+10,y+45,cw-20,42);ctx.fillStyle=fg;wrap(nameOf(d.id),x+20,y+73,cw-38,'500 21px "Noto Sans KR",sans-serif',1);ctx.fillStyle='#8e9c90';ctx.font='400 12px "Noto Sans KR",sans-serif';ctx.fillText(d.kind==='fixed'?'고정':d.kind==='manual'&&!visibleSwap(m,d)?'직접 수정':visibleSwap(m,d)?'':'순환',x+14,y+106);}if(d.note){ctx.fillStyle='#7b8f80';wrap(d.note,x+14,y+129,cw-28,'400 13px "Noto Sans KR",sans-serif',2);}if(d.warning){ctx.fillStyle='#b77747';ctx.font='500 12px "Noto Sans KR",sans-serif';ctx.fillText('! 확인 필요',x+cw-86,y+29);}});
  ctx.strokeStyle='#dfe7dd';ctx.lineWidth=1;for(let c=0;c<=7;c++){ctx.beginPath();ctx.moveTo(p+c*cw,top);ctx.lineTo(p+c*cw,top+42+rows*ch);ctx.stroke();}for(let row=0;row<=rows;row++){ctx.beginPath();ctx.moveTo(p,top+42+row*ch);ctx.lineTo(W-p,top+42+row*ch);ctx.stroke();}ctx.fillStyle='#91a08f';ctx.font='400 13px "Noto Sans KR",sans-serif';ctx.fillText('SHOP SCHEDULE · 주말과 공휴일 제외',p,H-25);return new Promise((resolve,reject)=>canvas.toBlob(b=>b?resolve(b):reject(new Error('이미지 생성 실패')),'image/png'));
 }
-function showHelp(){modal('처음부터, 차근차근',`<ol class="help-list"><li><strong>담당자 순번</strong><br>순번 편집에서 입·퇴사 인원을 반영하고 화살표로 순서를 바꿉니다.</li><li><strong>고정 요일과 연차</strong><br>요일별 고정 담당자를 지정하고 일반 순환 제외 여부를 선택하세요. 연차 기간은 자동 배정에서 건너뜁니다.</li><li><strong>날짜별 조정</strong><br>날짜를 눌러 담당자·메모를 바꾸세요. 직접 수정은 기본 순환 순번을 소비하지 않으며, 다른 날과 다음 달 순번을 바꾸지 않습니다. 연차와 겹치는 수동 배정은 !로 표시합니다.</li><li><strong>다음 달 이어가기</strong><br>다음 달을 처음 열 때 이전 달의 순환 다음 순번을 이어받습니다. 중간 달을 건너뛰면 그 달들도 같은 규칙으로 생성합니다. 고정 규칙은 이어받고 연차·휴무·직접 수정은 월별로 등록합니다. 이전 달을 나중에 바꾼 경우 ‘지난달 순번 다시 이어받기’를 누르세요.</li><li><strong>복사와 공유</strong><br>표 복사는 순번+달력을 HTML과 텍스트로 복사합니다. 붙여넣는 앱에 따라 텍스트만 표시될 수 있어요. 이미지 저장·공유로 달력 모양을 유지할 수 있습니다.</li><li><strong>저장과 백업</strong><br>자료는 이 브라우저에 저장됩니다. 기기 간 자동 동기화는 제공하지 않습니다. 백업 파일에 담당자·월별 설정이 함께 저장됩니다. 공휴일 자료 지원: ${Math.min(...Object.keys(holidays).map(Number))}–${Math.max(...Object.keys(holidays).map(Number))}년.</li></ol><div class="modal-actions"><button class="btn primary" id="helpClose">시작하기</button></div>`);$('#helpClose').onclick=close;}
+function showHelp(){modal('처음부터, 차근차근',`<ol class="help-list"><li><strong>담당자 순번</strong><br>순번 편집에서 입·퇴사 인원을 반영하고 화살표로 순서를 바꿉니다.</li><li><strong>고정 요일과 연차</strong><br>요일별 고정 담당자를 지정하고 일반 순환 제외 여부를 선택하세요. 연차 기간은 자동 배정에서 건너뜁니다.</li><li><strong>날짜별 조정</strong><br>날짜를 눌러 담당자·메모를 바꾸세요. 직접 수정은 기본 순환 순번을 소비하지 않으며, 다른 날과 다음 달 순번을 바꾸지 않습니다. 연차와 겹치는 수동 배정은 !로 표시합니다.</li><li><strong>일정 맞교환</strong><br>담당자 이름을 다른 날짜로 끌어 놓으면 두 사람의 일정이 교환됩니다. 모바일·키보드에서는 ‘일정 맞교환’을 누르고 두 날짜를 차례로 선택하세요. 최근 교환 날짜와 두 사람 이름은 화면에만 표시되고, 표 복사·이미지·인쇄에는 교환 내역이 포함되지 않습니다. 메모는 원래 날짜에 남습니다. 실행 취소로 교환을 되돌릴 수 있습니다.</li><li><strong>다음 달 이어가기</strong><br>다음 달을 처음 열 때 이전 달의 순환 다음 순번을 이어받습니다. 중간 달을 건너뛰면 그 달들도 같은 규칙으로 생성합니다. 고정 규칙은 이어받고 연차·휴무·직접 수정은 월별로 등록합니다. 이전 달을 나중에 바꾼 경우 ‘지난달 순번 다시 이어받기’를 누르세요.</li><li><strong>복사와 공유</strong><br>표 복사는 순번+달력을 HTML과 텍스트로 복사합니다. 붙여넣는 앱에 따라 텍스트만 표시될 수 있어요. 이미지 저장·공유로 달력 모양을 유지할 수 있습니다.</li><li><strong>저장과 백업</strong><br>자료는 이 브라우저에 저장됩니다. 기기 간 자동 동기화는 제공하지 않습니다. 백업 파일에 담당자·월별 설정이 함께 저장됩니다. 공휴일 자료 지원: ${Math.min(...Object.keys(holidays).map(Number))}–${Math.max(...Object.keys(holidays).map(Number))}년.</li></ol><div class="modal-actions"><button class="btn primary" id="helpClose">시작하기</button></div>`);$('#helpClose').onclick=close;}
 function bind(){
+ $('#swapModeBtn').onclick=()=>{cancelDrag();swapMode=!swapMode;swapSource=null;updateSwapMode();};
+ document.addEventListener('pointermove',moveDrag,{passive:false});document.addEventListener('pointerup',endDrag);document.addEventListener('pointercancel',cancelDrag);document.addEventListener('lostpointercapture',e=>{if(dragState?.pointerId===e.pointerId)cancelDrag();});window.addEventListener('blur',cancelDrag);
+ document.addEventListener('keydown',e=>{if(e.key==='Escape'){cancelDrag();swapMode=false;swapSource=null;updateSwapMode();}});
  $('#closeModal').onclick=close;$('#modal').addEventListener('click',e=>{if(e.target===$('#modal')){const r=$('#modal').getBoundingClientRect();if(e.clientX<r.left||e.clientX>r.right||e.clientY<r.top||e.clientY>r.bottom)close();}});
  $('#prevBtn').onclick=()=>navigate(shiftMonth(state.current,-1));$('#nextBtn').onclick=()=>navigate(shiftMonth(state.current,1));$('#monthInput').onchange=e=>navigate(e.target.value);$('#todayBtn').onclick=()=>navigate(monthKey(new Date()));
  $('#undoBtn').onclick=()=>{if(!history.length)return;state=JSON.parse(history.pop());persist();render();toast('마지막 변경을 취소했어요.');};$('#teamBtn').onclick=editTeam;
  $('#startSelect').onchange=e=>change(()=>{cur().start=e.target.value;cur().startMode='manual';},'순환 시작 담당자를 변경했어요.');
  $('#carryBtn').onclick=()=>{const prev=state.months[shiftMonth(state.current,-1)],pool=result().pool;if(!prev)return;const id=generate(shiftMonth(state.current,-1),prev,holidays).nextOrder.find(id=>pool.includes(id));change(()=>{cur().start=id||pool[0]||'';cur().startMode='carry';},'지난달 순환 다음 순번을 적용했어요.');};
  $('#excludeFixed').onchange=e=>change(()=>{cur().excludeFixed=e.target.checked;normalizeStart();},'순환 참여 설정을 변경했어요.');
- $('#generateBtn').onclick=()=>{const n=Object.keys(cur().overrides).length;modal('이번 달 다시 배정',`<p class="modal-intro">현재 담당자 순번, 고정 요일, 연차와 휴일 설정으로 배정합니다. 설정 변경은 평소에도 달력에 즉시 반영됩니다.</p><label class="check-row"><input type="checkbox" id="keepOverrides" checked>직접 수정한 날짜 ${n}건 유지</label><p class="hint">체크를 해제하면 직접 지정한 담당자도 자동 배정으로 돌아갑니다. 날짜별 메모는 유지됩니다.</p><div class="modal-actions"><button class="btn" id="cancelGenerate">취소</button><button class="btn primary" id="confirmGenerate">다시 배정</button></div>`);$('#cancelGenerate').onclick=close;$('#confirmGenerate').onclick=()=>{const keep=$('#keepOverrides').checked;change(()=>{if(!keep)cur().overrides={};normalizeStart();},keep?'현재 규칙으로 배정하고 직접 수정한 날짜를 유지했어요.':'직접 수정한 날짜까지 자동으로 다시 배정했어요.');close();};};
+ $('#generateBtn').onclick=()=>{const n=Object.keys(cur().overrides).length;modal('이번 달 다시 배정',`<p class="modal-intro">현재 담당자 순번, 고정 요일, 연차와 휴일 설정으로 배정합니다. 설정 변경은 평소에도 달력에 즉시 반영됩니다.</p><label class="check-row"><input type="checkbox" id="keepOverrides" checked>직접 수정한 날짜 ${n}건 유지</label><p class="hint">체크를 해제하면 직접 지정한 담당자도 자동 배정으로 돌아갑니다. 날짜별 메모는 유지됩니다.</p><div class="modal-actions"><button class="btn" id="cancelGenerate">취소</button><button class="btn primary" id="confirmGenerate">다시 배정</button></div>`);$('#cancelGenerate').onclick=close;$('#confirmGenerate').onclick=()=>{const keep=$('#keepOverrides').checked;change(()=>{if(!keep){cur().overrides={};cur().swaps={};}normalizeStart();},keep?'현재 규칙으로 배정하고 직접 수정한 날짜를 유지했어요.':'직접 수정한 날짜까지 자동으로 다시 배정했어요.');close();};};
  for(const tab of ['rules','leave'])$('#'+tab+'Tab').onclick=()=>{activeTab=tab;for(const t of ['rules','leave']){$('#'+t+'Tab').setAttribute('aria-selected',String(t===tab));$('#'+t+'Panel').hidden=t!==tab;}};
  $('#addLeaveBtn').onclick=editLeave;$('#addHolidayBtn').onclick=()=>editHoliday();$('#copyBtn').onclick=copyTable;
  $('#imageBtn').onclick=async()=>{try{download(await calendarImage(),`SHOP장_스케줄_${state.current}.png`);toast('순번과 달력을 이미지로 저장했어요.');}catch{toast('이미지를 만들지 못했어요. 표 복사 또는 인쇄를 이용해 주세요.');}};

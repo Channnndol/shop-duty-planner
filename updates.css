@@ -1,0 +1,24 @@
+:root{--red:#e21c2a}
+.weekday:first-child,.weekday:nth-child(7){color:var(--red);background:#fff2f3;font-weight:700}
+.day.sun,.day.sat,.day.holiday{background:#fff2f3}
+.day.sun .date-num,.day.sat .date-num,.day.holiday .date-num,.holiday-label{color:var(--red);font-weight:700}
+.day.today.sun .date-num,.day.today.sat .date-num,.day.today.holiday .date-num{background:var(--red);color:#fff}
+.calendar-tools{display:flex;align-items:center;gap:16px}
+.calendar-tools .btn{min-height:34px;padding:7px 10px;font-size:11px}
+#swapModeBtn[aria-pressed=true]{background:var(--green);border-color:var(--green);color:white}
+#swapInstructions{background:#edf5ef;border-top:1px solid #d7e8db;padding:11px 18px;color:#216956;font-size:12px;line-height:1.8}
+.calendar-tip{line-height:1.9}
+.assignment[data-swap-handle]{touch-action:none;cursor:grab;user-select:none;-webkit-user-select:none}
+.is-swapping,.is-swapping *{cursor:grabbing!important;user-select:none!important}
+.day.drag-source{opacity:.45}
+.day.drop-target,.day.swap-selected{background:#e7f4e9!important;box-shadow:inset 0 0 0 2px #216956!important}
+.day.drop-invalid{box-shadow:inset 0 0 0 2px #e21c2a!important}
+.swap-mode .day[data-assigned=true]{cursor:crosshair}
+.swap-mode .assignment{touch-action:auto;cursor:crosshair}
+.swap-mode .day[data-assigned=false]{opacity:.55}
+.swap-ghost{position:fixed;z-index:30;pointer-events:none;background:#216956;color:white;padding:10px 14px;border-radius:8px;font-size:12px;box-shadow:0 5px 24px #163a3933;max-width:180px;overflow-wrap:anywhere}
+.swap-badge{display:flex;flex-direction:column;gap:2px;color:#76529b;background:#f6f0fc;border-radius:4px;padding:4px 5px;font-size:9px;line-height:1.5;overflow-wrap:anywhere}
+.swapped .assignment.manual{border-left-color:#996bc2}
+@media(max-width:1150px){.calendar-tools{flex-direction:column;align-items:flex-end;gap:9px}}
+@media(max-width:560px){.calendar-tools{gap:7px}.calendar-tools .btn{min-height:36px;font-size:10px;padding:7px 9px}.swap-badge{font-size:8px;line-height:1.5;padding:3px 2px;gap:1px}.swap-badge span{word-break:keep-all;overflow-wrap:anywhere}#swapInstructions{font-size:11px;padding:10px 12px}}
+@media print{.calendar-tools,#swapInstructions,.swap-badge,.swap-ghost,.swapped .mini-kind{display:none!important}.swapped .assignment.manual{border-left:0}.day.sun,.day.sat,.day.holiday,.weekday:first-child,.weekday:nth-child(7){print-color-adjust:exact;-webkit-print-color-adjust:exact}}

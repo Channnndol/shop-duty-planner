@@ -10,6 +10,26 @@ export function holidayName(date,month,holidays) {
   return (holidays[date.slice(0,4)]?.[date] || []).join(' · ');
 }
 export function available(month,id,date) {return !month.leave.some(l=>l.id===id && l.from<=date && l.to>=date);}
+export function visibleSwap(month,day) {
+  const swap=month.swaps?.[day.date];
+  return swap && day.kind==='manual' && day.id===swap.assignedId && month.overrides[day.date]===swap.assignedId ? swap : null;
+}
+export function swapAssignments(key,month,holidays,from,to) {
+  if(from===to)return {ok:false,error:'서로 다른 두 날짜를 선택해 주세요.'};
+  const days=generate(key,month,holidays).days,a=days.find(d=>d.date===from),b=days.find(d=>d.date===to);
+  if(!a||!b)return {ok:false,error:'같은 달 안에서 두 날짜를 선택해 주세요.'};
+  if(a.kind==='off'||b.kind==='off')return {ok:false,error:'주말과 공휴일은 교환할 수 없습니다.'};
+  if(!a.id||!b.id)return {ok:false,error:'담당자가 배정된 두 날짜만 교환할 수 있습니다.'};
+  if(a.id===b.id)return {ok:false,error:'두 날짜의 담당자가 같습니다.'};
+  const aName=month.roster.find(p=>p.id===a.id).name,bName=month.roster.find(p=>p.id===b.id).name;
+  if(!available(month,b.id,from))return {ok:false,error:`${bName}님의 ${a.day}일 연차와 겹쳐 교환할 수 없습니다.`};
+  if(!available(month,a.id,to))return {ok:false,error:`${aName}님의 ${b.day}일 연차와 겹쳐 교환할 수 없습니다.`};
+  month.overrides[from]=b.id;month.overrides[to]=a.id;
+  month.swaps??={};
+  month.swaps[from]={otherDate:to,fromName:aName,toName:bName,assignedId:b.id};
+  month.swaps[to]={otherDate:from,fromName:bName,toName:aName,assignedId:a.id};
+  return {ok:true,fromName:aName,toName:bName,fromDay:a.day,toDay:b.day};
+}
 export function generate(key,month,holidays) {
   const ids=month.roster.map(p=>p.id), fixedIds=new Set(Object.values(month.fixed));
   const pool=ids.filter(id=>!month.excludeFixed || !fixedIds.has(id));
@@ -44,7 +64,7 @@ export function newMonth(key,state,holidays) {
   const prev=state.months[shiftMonth(key,-1)], roster=structuredClone(state.roster),ids=roster.map(p=>p.id);
   const prior=prev?generate(shiftMonth(key,-1),prev,holidays):null;
   const fixed=prev?Object.fromEntries(Object.entries(prev.fixed).filter(([,id])=>ids.includes(id))):{};
-  return {roster,fixed,excludeFixed:prev?.excludeFixed??true,start:prior?.nextOrder.find(id=>ids.includes(id))||ids[0]||'',leave:[],holidays:{},overrides:{},notes:{},startMode:prev?'carry':'first'};
+  return {roster,fixed,excludeFixed:prev?.excludeFixed??true,start:prior?.nextOrder.find(id=>ids.includes(id))||ids[0]||'',leave:[],holidays:{},overrides:{},notes:{},swaps:{},startMode:prev?'carry':'first'};
 }
 export function ensureMonth(key,state,holidays) {
   if(state.months[key]) return;
@@ -59,6 +79,7 @@ export function validateState(s) {
   const date=/^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/,mk=/^\d{4}-(0[1-9]|1[0-2])$/;
   const roster=r=>Array.isArray(r)&&r.length>0&&r.length<=50&&new Set(r.map(p=>p.id)).size===r.length&&r.every(p=>p&&typeof p.id==='string'&&/^[\w-]{1,80}$/.test(p.id)&&typeof p.name==='string'&&p.name.trim().length>0&&p.name.length<=30);
   const record=o=>o&&typeof o==='object'&&!Array.isArray(o)&&Object.keys(o).every(k=>!['__proto__','constructor','prototype'].includes(k));
+  const swaps=(key,m)=>m.swaps===undefined||(record(m.swaps)&&Object.entries(m.swaps).every(([d,v])=>date.test(d)&&d.startsWith(key+'-')&&Number(d.slice(8))<=daysInMonth(key)&&record(v)&&date.test(v.otherDate)&&v.otherDate.startsWith(key+'-')&&Number(v.otherDate.slice(8))<=daysInMonth(key)&&v.otherDate!==d&&['fromName','toName'].every(f=>typeof v[f]==='string'&&v[f].length>0&&v[f].length<=30)&&m.roster.some(p=>p.id===v.assignedId)&&m.overrides[d]===v.assignedId));
   if(!s||s.version!==1||!roster(s.roster)||!record(s.months)||!mk.test(s.current)||Object.keys(s.months).length>240)return false;
-  return Object.entries(s.months).every(([key,m])=>mk.test(key)&&m&&roster(m.roster)&&typeof m.start==='string'&&typeof m.excludeFixed==='boolean'&&['carry','first','manual'].includes(m.startMode)&&record(m.fixed)&&Object.entries(m.fixed).every(([d,id])=>/^[1-5]$/.test(d)&&m.roster.some(p=>p.id===id))&&Array.isArray(m.leave)&&m.leave.length<=1000&&m.leave.every(l=>l&&m.roster.some(p=>p.id===l.id)&&date.test(l.from)&&date.test(l.to)&&l.from<=l.to)&&['holidays','overrides','notes'].every(f=>record(m[f])&&Object.entries(m[f]).every(([d,v])=>date.test(d)&&d.startsWith(key+'-')&&(f==='overrides'?(v===null||m.roster.some(p=>p.id===v)):(typeof v==='string'&&v.length<=300)))));
+  return Object.entries(s.months).every(([key,m])=>mk.test(key)&&m&&roster(m.roster)&&typeof m.start==='string'&&typeof m.excludeFixed==='boolean'&&['carry','first','manual'].includes(m.startMode)&&record(m.fixed)&&Object.entries(m.fixed).every(([d,id])=>/^[1-5]$/.test(d)&&m.roster.some(p=>p.id===id))&&Array.isArray(m.leave)&&m.leave.length<=1000&&m.leave.every(l=>l&&m.roster.some(p=>p.id===l.id)&&date.test(l.from)&&date.test(l.to)&&l.from<=l.to)&&['holidays','overrides','notes'].every(f=>record(m[f])&&Object.entries(m[f]).every(([d,v])=>date.test(d)&&d.startsWith(key+'-')&&(f==='overrides'?(v===null||m.roster.some(p=>p.id===v)):(typeof v==='string'&&v.length<=300))))&&swaps(key,m));
 }
